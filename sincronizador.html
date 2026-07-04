@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sincronizador de Letras Profesional</title>
+
+<style>
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: #101010;
+    color: white;
+    font-family: Arial, Helvetica, sans-serif;
+    padding: 30px;
+}
+
+.container {
+    max-width: 900px;
+    margin: auto;
+}
+
+h1 {
+    text-align: center;
+    font-size: 40px;
+}
+
+.box {
+    background: #202020;
+    border-radius: 25px;
+    padding: 25px;
+    margin-top: 25px;
+}
+
+input, textarea {
+    width: 100%;
+    background: #333;
+    color: white;
+    border: none;
+    border-radius: 15px;
+    padding: 15px;
+    font-size: 18px;
+}
+
+textarea {
+    height: 250px;
+    resize: none;
+}
+
+button {
+    background: white;
+    color: black;
+    border: none;
+    border-radius: 30px;
+    padding: 15px 30px;
+    font-size: 17px;
+    cursor: pointer;
+    margin: 10px 5px;
+    transition: opacity 0.2s, transform 0.1s;
+}
+
+button:hover {
+    opacity: .8;
+}
+
+button:active {
+    transform: scale(0.98);
+}
+
+audio {
+    width: 100%;
+    margin-top: 20px;
+}
+
+#time {
+    text-align: center;
+    font-size: 50px;
+    font-weight: bold;
+    margin: 20px;
+}
+
+/* ESTILOS EXCLUSIVOS PARA LA PESTAÑA DE SINCRONIZACIÓN */
+#syncTabContent {
+    max-width: 800px;
+    margin: 50px auto;
+}
+
+.line {
+    background: #252525;
+    padding: 16px;
+    border-radius: 12px;
+    margin: 12px 0;
+    font-size: 24px;
+    font-weight: bold;
+    transition: all 0.3s ease;
+    border-left: 5px solid #555;
+}
+
+.pending {
+    color: #666;
+    border-left-color: #444;
+}
+
+.done {
+    color: #00ff99;
+    background: #152a20;
+    border-left-color: #00ff99;
+    transform: scale(1.02);
+}
+
+pre {
+    background: #000;
+    padding: 20px;
+    border-radius: 15px;
+    white-space: pre-wrap;
+    font-size: 16px;
+}
+</style>
+</head>
+
+<body>
+
+<!-- 1. VISTA DE CONTROL PRINCIPAL -->
+<div id="controlPanel" class="container">
+    <h1>Sincronizador de letras</h1>
+
+    <div class="box">
+        <h2>1. Canción</h2>
+        <input type="file" id="songFile" accept="audio/*">
+        <audio id="audio" controls></audio>
+        <div id="time">0.00</div>
+        <button onclick="togglePlay()">▶ / ⏸</button>
+        <button onclick="markTime()" style="background: #00ff99; font-weight: bold;">MARCAR TIEMPO</button>
+    </div>
+
+    <div class="box">
+        <h2>2. Letra</h2>
+        <p>Escribe cada frase en una línea:</p>
+        <textarea id="lyricsInput" placeholder="Primera línea&#10;Segunda línea&#10;Tercera línea"></textarea>
+        <br>
+        <button onclick="openSyncTabAndLoad()" style="background: #00bfff; color: white; font-weight: bold;">3. Abrir ventana de Sincronización</button>
+    </div>
+
+    <div class="box">
+        <h2>4. Código generado</h2>
+        <pre id="output">Aquí aparecerá el código</pre>
+        <button onclick="copyCode()">COPIAR CÓDIGO</button>
+    </div>
+</div>
+
+<!-- 2. VISTA INDEPENDIENTE DE LA PESTAÑA SECUNDARIA (Oculta por defecto aquí) -->
+<div id="syncTabContent" style="display: none;">
+    <h1 style="color: #00ff99;">Pantalla de Sincronización Activa</h1>
+    <p style="color: #aaa; text-align: center;">Mantén esta ventana visible a un lado mientras marcas los tiempos en la otra.</p>
+    <div id="lines"></div>
+</div>
+
+<script>
+let audio = document.getElementById("audio");
+let lyrics = [];
+let currentLine = 0;
+let synced = [];
+let syncWindow = null;
+
+// Crear canal de comunicación en tiempo real entre pestañas
+const syncChannel = new BroadcastChannel('lyrics_synchronizer_stream');
+
+// DETECTAR SI ESTA PARTE DEL CÓDIGO SE ABRE COMO LA PESTAÑA SECUNDARIA
+const urlParams = new URLSearchParams(window.location.search);
+const isSyncTab = urlParams.get('view') === 'sync_display';
+
+if (isSyncTab) {
+    // Si es la pestaña secundaria, borra el panel de control y muestra el contenedor de líneas
+    document.getElementById("controlPanel").remove();
+    document.getElementById("syncTabContent").style.display = "block";
+    
+    // Escuchar actualizaciones desde la ventana de control principal
+    syncChannel.onmessage = (event) => {
+        const data = event.data;
+        if (data.action === "UPDATE_DISPLAY") {
+            renderLinesInTab(data.lyrics, data.currentLine);
+        }
+    };
+}
+
+// Cargar canción (Pestaña principal)
+if (!isSyncTab) {
+    document.getElementById("songFile").addEventListener("change", function(){
+        let file = this.files[0];
+        if (file) {
+            audio.src = URL.createObjectURL(file);
+        }
+    });
+
+    // Tiempo actual
+    audio.addEventListener("timeupdate", () => {
+        document.getElementById("time").innerHTML = audio.currentTime.toFixed(2);
+    });
+}
+
+function togglePlay() {
+    if (audio.paused) {
+        audio.play();
+    } else {
+        audio.pause();
+    }
+}
+
+// Abre la pestaña nueva y envía los datos iniciales de las letras
+function openSyncTabAndLoad() {
+    let text = document.getElementById("lyricsInput").value;
+    lyrics = text.split("\n").filter(line => line.trim() != "");
+
+    if (lyrics.length === 0) {
+        alert("Por favor, escribe primero alguna frase en el cuadro de texto.");
+        return;
+    }
+
+    currentLine = 0;
+    synced = [];
+
+    // Si la pestaña no está abierta, la crea llamándose a sí misma con el parámetro mágico de vista
+    if (!syncWindow || syncWindow.closed) {
+        syncWindow = window.open(window.location.href + "?view=sync_display", "LyricsSyncTabWindow");
+    } else {
+        syncWindow.focus();
+    }
+
+    // Enviamos un pequeño retraso para asegurar que la pestaña nueva esté lista para recibir los datos
+    setTimeout(() => {
+        sendUpdateToTab();
+    }, 300);
+
+    generateCode();
+}
+
+// Envía el estado actual (letras y línea por la que vamos) a la pestaña secundaria
+function sendUpdateToTab() {
+    syncChannel.postMessage({
+        action: "UPDATE_DISPLAY",
+        lyrics: lyrics,
+        currentLine: currentLine
+    });
+}
+
+// Esta función dibuja las líneas EXCLUSIVAMENTE en la pestaña de sincronización secundaria
+function renderLinesInTab(lyricsList, currentActiveLine) {
+    let box = document.getElementById("lines");
+    box.innerHTML = "";
+
+    lyricsList.forEach((line, index) => {
+        let div = document.createElement("div");
+        div.className = "line";
+
+        if (index < currentActiveLine) {
+            div.classList.add("done");
+        } else {
+            div.classList.add("pending");
+        }
+
+        div.innerHTML = (index + 1) + ". " + line;
+        box.appendChild(div);
+        
+        // Auto-scroll en la pestaña nueva para mantener siempre la línea actual a la vista
+        if (index === currentActiveLine) {
+            div.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+    });
+}
+
+// Marcar línea actual (Pestaña principal)
+function markTime() {
+    if (lyrics.length === 0) {
+        alert("Primero carga la letra pulsando el botón azul.");
+        return;
+    }
+
+    if (currentLine >= lyrics.length) {
+        alert("Todas las líneas están sincronizadas");
+        return;
+    }
+
+    synced.push({
+        time: Number(audio.currentTime.toFixed(2)),
+        text: lyrics[currentLine]
+    });
+
+    currentLine++;
+    
+    // Mandar el nuevo estado a la pestaña secundaria para que cambie de color y haga scroll
+    sendUpdateToTab();
+    generateCode();
+}
+
+// Generar formato JSON estructurado
+function generateCode() {
+    let code = "[\n";
+    synced.forEach((line, index) => {
+        code += `  {time: ${line.time}, text: "${line.text.replace(/"/g, '\\"')}"}`;
+        if (index !== synced.length - 1) {
+            code += ",\n";
+        }
+    });
+    code += "\n]";
+
+    document.getElementById("output").textContent = code;
+}
+
+function copyCode() {
+    let code = document.getElementById("output").textContent;
+    navigator.clipboard.writeText(code);
+    alert("Código copiado en el portapapeles");
+}
+</script>
+</body>
+</html>
